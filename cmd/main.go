@@ -7,7 +7,6 @@ import (
 	"runtime"
 
 	"github.com/cilium/ebpf"
-	"github.com/cilium/ebpf/link"
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/containernetworking/cni/pkg/types"
 	current "github.com/containernetworking/cni/pkg/types/100"
@@ -75,58 +74,66 @@ func cmdAdd(args *skel.CmdArgs) error {
 	}
 
 	// Load eBPF program
-	coll, err := loadEBPFProgram(config.BPFProgPath)
-	if err != nil {
-		return fmt.Errorf("failed to load eBPF program: %v", err)
-	}
-	defer coll.Close()
+	// coll, err := loadEBPFProgram(config.BPFProgPath)
+	// if err != nil {
+	// 	return fmt.Errorf("failed to load eBPF program: %v", err)
+	// }
+	// defer coll.Close()
 
-	// Attach eBPF program to host interface
-	hostLink, err := netlink.LinkByName(hostIface.Name)
-	if err != nil {
-		return fmt.Errorf("failed to find host interface: %v", err)
-	}
+	// // Attach eBPF program to host interface
+	// hostLink, err := netlink.LinkByName(hostIface.Name)
+	// if err != nil {
+	// 	return fmt.Errorf("failed to find host interface: %v", err)
+	// }
 
 	// Attach TC eBPF program
-	l, err := link.AttachTCX(link.TCXOptions{
-		Interface: hostLink.Attrs().Index,
-		Program:   coll.Programs["tc_ingress"],
-	})
-	if err != nil {
-		return fmt.Errorf("failed to attach TC program: %v", err)
-	}
-	defer l.Close()
+	// l, err := link.AttachTCX(link.TCXOptions{
+	// 	Interface: hostLink.Attrs().Index,
+	// 	Program:   coll.Programs["tc_ingress"],
+	// })
+	// if err != nil {
+	// 	return fmt.Errorf("failed to attach TC program: %v", err)
+	// }
+	// defer l.Close()
 
+	var result *current.Result
 	// Set up IP address (example - should come from config)
-	addr, err := netlink.ParseAddr("10.0.0.2/24")
-	if err != nil {
-		return err
-	}
-
-	err = netns.Do(func(_ ns.NetNS) error {
-		link, err := netlink.LinkByName(contIface.Name)
+	if config.IPAM.Type == "host-local" {
+		// Get subnet from configuration
+		addr, err := netlink.ParseAddr("10.0.0.2/24")
 		if err != nil {
 			return err
 		}
 
-		if err := netlink.AddrAdd(link, addr); err != nil {
-			return fmt.Errorf("failed to add IP address: %v", err)
+		//Equivalent to netns exec. Assign IP and bring up interfaces
+		err = netns.Do(func(_ ns.NetNS) error {
+			link, err := netlink.LinkByName(contIface.Name)
+			if err != nil {
+				return err
+			}
+
+			if err := netlink.AddrAdd(link, addr); err != nil {
+				return fmt.Errorf("failed to add IP address: %v", err)
+			}
+
+			if err := netlink.LinkSetUp(link); err != nil {
+				return fmt.Errorf("failed to set link up: %v", err)
+			}
+
+			return nil
+		})
+
+		result = &current.Result{
+			CNIVersion: config.CNIVersion,
+			Interfaces: []*current.Interface{hostIface, contIface},
+			IPs: []*current.IPConfig{{
+				Address: net.IPNet{IP: addr.IP, Mask: addr.Mask},
+				Gateway: net.ParseIP("10.0.0.1"),
+			}},
 		}
 
-		if err := netlink.LinkSetUp(link); err != nil {
-			return fmt.Errorf("failed to set link up: %v", err)
-		}
-
-		return nil
-	})
-
-	result := &current.Result{
-		CNIVersion: config.CNIVersion,
-		Interfaces: []*current.Interface{hostIface, contIface},
-		IPs: []*current.IPConfig{{
-			Address: net.IPNet{IP: addr.IP, Mask: addr.Mask},
-			Gateway: net.ParseIP("10.0.0.1"),
-		}},
+	} else {
+		return fmt.Errorf("unsupported IPAM type: %s", config.IPAM.Type)
 	}
 
 	return types.PrintResult(result, config.CNIVersion)
@@ -155,7 +162,11 @@ func main() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	skel.PluginMain(cmdAdd, cmdCheck, cmdDel, version.All, "")
+	skel.PluginMainFuncs(skel.CNIFuncs{
+		Check: cmdCheck,
+		Add:   cmdAdd,
+		Del:   cmdDel,
+	}, version.All, "ebpf-cni")
 }
 
 func cmdCheck(args *skel.CmdArgs) error {
