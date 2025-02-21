@@ -11,3 +11,20 @@ sudo ln -sf /proc/"$pid"/ns/net /var/run/netns/test
 
 # Execute CNI plugin
 CNI_COMMAND=ADD CNI_CONTAINERID=test CNI_NETNS=/var/run/netns/test CNI_IFNAME=eth0 CNI_ARGS="" CNI_PATH=./bin ./bin/ecni < conf/ebpf-cni.conf
+
+#make assertion
+if ! docker container exec -it test ip addr show | grep -q eth0; then
+    echo "No eth interface found, exiting."
+    exit 1
+fi
+
+
+# Execute CNI plugin
+CNI_COMMAND=DEL CNI_CONTAINERID=test CNI_NETNS=/var/run/netns/test CNI_IFNAME=eth0 CNI_ARGS="" CNI_PATH=./bin ./bin/ecni < conf/ebpf-cni.conf
+
+if docker container exec -it test ip addr show | grep -q eth0; then
+    echo "eth interface found, exiting."
+    exit 1
+fi
+
+echo "Tests Passed!"
