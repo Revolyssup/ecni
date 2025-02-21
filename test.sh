@@ -3,6 +3,7 @@
 #create a none networked docker container and create it's network namespace.
 # This will be handled by the container runtime which will create and provide the container network namespace.
 cid=$(docker container run -d --name test --network none alpine tail -f /dev/null)
+trap "docker container rm -f test" EXIT
 # Get the container's PID
 pid=$(docker inspect -f '{{.State.Pid}}' test)
 sudo mkdir -p /var/run/netns
@@ -30,4 +31,4 @@ if docker container exec -i test ip addr show | grep -q eth0; then
 fi
 
 echo "Tests Passed!"
-docker container rm -f test
+

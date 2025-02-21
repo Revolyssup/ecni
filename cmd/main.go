@@ -6,7 +6,6 @@ import (
 	"net"
 	"runtime"
 
-	"github.com/cilium/ebpf"
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/containernetworking/cni/pkg/types"
 	current "github.com/containernetworking/cni/pkg/types/100"
@@ -21,19 +20,8 @@ type PluginConf struct {
 	BPFProgPath string `json:"bpf_prog_path"`
 }
 
-func loadEBPFProgram(path string) (*ebpf.Collection, error) {
-	spec, err := ebpf.LoadCollectionSpec(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load spec: %v", err)
-	}
-
-	coll, err := ebpf.NewCollection(spec)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create collection: %v", err)
-	}
-
-	return coll, nil
-}
+const BPF_ELF_NAME = "ebpf_prog.o"
+const TC_PROG_NAME = "tc_ingress"
 
 func setupVeth(netns ns.NetNS, ifName string, mtu int) (*current.Interface, *current.Interface, error) {
 	hostIface := &current.Interface{}
@@ -73,29 +61,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("failed to setup veth: %v", err)
 	}
 
-	// Load eBPF program
-	// coll, err := loadEBPFProgram(config.BPFProgPath)
-	// if err != nil {
-	// 	return fmt.Errorf("failed to load eBPF program: %v", err)
-	// }
-	// defer coll.Close()
-
-	// // Attach eBPF program to host interface
-	// hostLink, err := netlink.LinkByName(hostIface.Name)
-	// if err != nil {
-	// 	return fmt.Errorf("failed to find host interface: %v", err)
-	// }
-
-	// Attach TC eBPF program
-	// l, err := link.AttachTCX(link.TCXOptions{
-	// 	Interface: hostLink.Attrs().Index,
-	// 	Program:   coll.Programs["tc_ingress"],
-	// })
-	// if err != nil {
-	// 	return fmt.Errorf("failed to attach TC program: %v", err)
-	// }
-	// defer l.Close()
-
+	// IPAM management
 	var result *current.Result
 	// Set up IP address (example - should come from config)
 	if config.IPAM.Type == "host-local" {
@@ -136,6 +102,38 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("unsupported IPAM type: %s", config.IPAM.Type)
 	}
 
+	// Load eBPF program
+	// bpfModule, err := bpf.NewModuleFromFile(BPF_ELF_NAME)
+	// if err != nil {
+	// 	return err
+	// }
+	// defer bpfModule.Close()
+
+	// // TC initialization
+	// hook := bpfModule.TcHookInit()
+	// err = hook.SetInterfaceByName(contIface.Name)
+	// if err != nil {
+	// 	return fmt.Errorf("failed to set tc hook hook on interfgace %s: %v", contIface.Name, err)
+	// }
+
+	// hook.SetAttachPoint(bpf.BPFTcEgress)
+	// err = hook.Create()
+	// if err != nil {
+	// 	if errno, ok := err.(syscall.Errno); ok && errno != syscall.EEXIST {
+	// 		return fmt.Errorf("failed to create tc hook on interface %s: %v", contIface.Name, err)
+	// 	}
+	// }
+
+	// tcProg, err := bpfModule.GetProgram(TC_PROG_NAME)
+	// if tcProg == nil {
+	// 	return fmt.Errorf("could not find program %s: ", TC_PROG_NAME)
+	// }
+	// var tcOpts bpf.TcOpts
+	// tcOpts.ProgFd = int(tcProg.FileDescriptor())
+	// err = hook.Attach(&tcOpts)
+	// if err != nil {
+	// 	return err
+	// }
 	return types.PrintResult(result, config.CNIVersion)
 }
 
