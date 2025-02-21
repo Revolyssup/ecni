@@ -33,4 +33,4 @@ jobs:
         run: make build
 
       - name: Run test.sh script
-        run: ./test.sh
+        run: sudo ./test.sh
