@@ -9,7 +9,7 @@ build: generate
 
 
 docker-run-host: docker-build
-	docker run -it --rm -v /var/run/docker.sock:/var/run/docker.sock --pid=host --privileged=true --network=host --name=ecni revoly/ecni:latest
+	docker run -i --rm -v /var/run/docker.sock:/var/run/docker.sock --pid=host --privileged=true --network=host --name=ecni revoly/ecni:latest
 
 docker-build:
 	docker build -t revoly/ecni:latest .
