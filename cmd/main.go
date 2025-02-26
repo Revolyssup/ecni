@@ -20,7 +20,7 @@ type PluginConf struct {
 	BPFProgPath string `json:"bpf_prog_path"`
 }
 
-const BPF_ELF_NAME = "ebpf_prog.o"
+const BPF_ELF_NAME = "./bpf/ebpf_prog.o"
 const TC_PROG_NAME = "tc_ingress"
 
 func setupVeth(netns ns.NetNS, ifName string, mtu int) (*current.Interface, *current.Interface, error) {
@@ -61,6 +61,28 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("failed to setup veth: %v", err)
 	}
 
+	// On the HOST side (outside the container namespace):
+	hostVeth, err := netlink.LinkByName(hostIface.Name)
+	if err != nil {
+		return fmt.Errorf("failed to find host veth: %v", err)
+	}
+
+	// Add the gateway IP to the host-side interface
+	hostAddr, err := netlink.ParseAddr("10.0.0.1/24")
+	if err != nil {
+		return fmt.Errorf("failed to parse host IP: %v", err)
+	}
+
+	if err := netlink.AddrAdd(hostVeth, hostAddr); err != nil {
+		return fmt.Errorf("failed to assign IP to host veth: %v", err)
+	}
+
+	// Bring the host-side interface up
+	if err := netlink.LinkSetUp(hostVeth); err != nil {
+		return fmt.Errorf("failed to set host veth up: %v", err)
+	}
+
+	gateway := "10.0.0.1"
 	// IPAM management
 	var result *current.Result
 	// Set up IP address (example - should come from config)
@@ -86,6 +108,21 @@ func cmdAdd(args *skel.CmdArgs) error {
 				return fmt.Errorf("failed to set link up: %v", err)
 			}
 
+			// Add default route via 10.1.1.1
+			_, defaultDst, err := net.ParseCIDR("0.0.0.0/0")
+			if err != nil {
+				return fmt.Errorf("failed to parse default route destination: %v", err)
+			}
+
+			route := &netlink.Route{
+				Dst: defaultDst,
+				Gw:  net.ParseIP(gateway),
+			}
+
+			if err := netlink.RouteAdd(route); err != nil {
+				return fmt.Errorf("failed to add default route: %v", err)
+			}
+
 			return nil
 		})
 
@@ -94,48 +131,62 @@ func cmdAdd(args *skel.CmdArgs) error {
 			Interfaces: []*current.Interface{hostIface, contIface},
 			IPs: []*current.IPConfig{{
 				Address: net.IPNet{IP: addr.IP, Mask: addr.Mask},
-				Gateway: net.ParseIP("10.0.0.1"),
+				Gateway: net.ParseIP(gateway),
 			}},
 		}
 
 	} else {
 		return fmt.Errorf("unsupported IPAM type: %s", config.IPAM.Type)
 	}
-
-	// Load eBPF program
-	// bpfModule, err := bpf.NewModuleFromFile(BPF_ELF_NAME)
-	// if err != nil {
-	// 	return err
-	// }
-	// defer bpfModule.Close()
-
-	// // TC initialization
-	// hook := bpfModule.TcHookInit()
-	// err = hook.SetInterfaceByName(contIface.Name)
-	// if err != nil {
-	// 	return fmt.Errorf("failed to set tc hook hook on interfgace %s: %v", contIface.Name, err)
-	// }
-
-	// hook.SetAttachPoint(bpf.BPFTcEgress)
-	// err = hook.Create()
-	// if err != nil {
-	// 	if errno, ok := err.(syscall.Errno); ok && errno != syscall.EEXIST {
-	// 		return fmt.Errorf("failed to create tc hook on interface %s: %v", contIface.Name, err)
-	// 	}
-	// }
-
-	// tcProg, err := bpfModule.GetProgram(TC_PROG_NAME)
-	// if tcProg == nil {
-	// 	return fmt.Errorf("could not find program %s: ", TC_PROG_NAME)
-	// }
-	// var tcOpts bpf.TcOpts
-	// tcOpts.ProgFd = int(tcProg.FileDescriptor())
-	// err = hook.Attach(&tcOpts)
-	// if err != nil {
-	// 	return err
+	// if err := loadBPFProgram(hostIface.Name); err != nil {
+	// 	return fmt.Errorf("failed to load BPF program: %v", err)
 	// }
 	return types.PrintResult(result, config.CNIVersion)
 }
+
+// func loadBPFProgram(ifaceName string) error {
+// 	// Load eBPF program
+// 	bpfModule, err := bpf.NewModuleFromFile(BPF_ELF_NAME)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to load BPF module: %v", err)
+// 	}
+// 	defer bpfModule.Close() // Keep this, but pin first
+
+// 	// TC initialization
+// 	hook := bpfModule.TcHookInit()
+// 	err = hook.SetInterfaceByName(ifaceName)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to set tc hook hook on interfgace %s: %v", ifaceName, err)
+// 	}
+
+// 	hook.SetAttachPoint(bpf.BPFTcIngress)
+// 	err = hook.Create()
+// 	if err != nil {
+// 		if errno, ok := err.(syscall.Errno); ok && errno != syscall.EEXIST {
+// 			return fmt.Errorf("failed to create tc hook on interface %s: %v", ifaceName, err)
+// 		}
+// 	}
+
+// 	tcProg, err := bpfModule.GetProgram(TC_PROG_NAME)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to get program %s: %v", TC_PROG_NAME, err)
+// 	}
+// 	if tcProg == nil {
+// 		return fmt.Errorf("could not find program %s: ", TC_PROG_NAME)
+// 	}
+// 	var tcOpts bpf.TcOpts
+// 	pinPath := "/sys/fs/bpf/tc_ingress"
+// 	if err := tcProg.Pin(pinPath); err != nil {
+// 		return fmt.Errorf("failed to pin program: %v", err)
+// 	}
+
+//		// Attach using pinned program
+//		tcOpts.ProgFd = int(tcProg.FileDescriptor())
+//		if err := hook.Attach(&tcOpts); err != nil {
+//			return fmt.Errorf("failed to attach: %v (fd: %d)", err, tcOpts.ProgFd)
+//		}
+//		return nil
+//	}
 
 func cmdDel(args *skel.CmdArgs) error {
 	// Cleanup network namespace

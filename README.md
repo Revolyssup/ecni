@@ -6,8 +6,8 @@ Very simple eBPF based CNI plugin developed mostly for learning purposes.
 
 **eCNI** integrates two main responsibilities:
 
-- **CNI Functions**: Pod network setup (IPAM, interfaces, routes).
-- **Service Handling**: Replace kube-proxy using eBPF for traffic management.
+- **CNI Functions**: Pod network setup (IPAM, interfaces, routes). Handled by the CLI tool
+- **Service Handling**: Setting up eBPF program. Replace kube-proxy using eBPF for traffic management. Handled by ecni agent.
 
 ### **High-Level Architecture**
 

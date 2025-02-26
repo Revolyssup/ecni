@@ -20,6 +20,13 @@ if ! docker container exec -i test ip addr show | grep -q eth0; then
     exit 1
 fi
 
+echo "Breakpoint reached. Press ^C to continue..."
+trap "break" SIGINT
+while true; do
+    sleep 1
+done
+trap - SIGINT  # reset the SIGINT trap
+
 
 # Execute CNI plugin
 CNI_COMMAND=DEL CNI_CONTAINERID=test CNI_NETNS=/var/run/netns/test CNI_IFNAME=eth0 CNI_ARGS="" CNI_PATH=./bin ./bin/ecni < conf/ebpf-cni.conf
