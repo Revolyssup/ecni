@@ -1,7 +1,9 @@
 CUR_DIR := $(shell pwd)
 BPF_DIR := $(realpath $(CUR_DIR)/bpf)
 generate:
-	clang -g -O2 -I/usr/include/linux -c -target bpf -o $(BPF_DIR)/ebpf_prog.o $(BPF_DIR)/prog.c
+	clang -O2 -target bpf -D__KERNEL__ -D__BPF__ \
+	      -I/usr/include/$(shell uname -m)-linux-gnu \
+	      -c -o $(BPF_DIR)/ebpf_prog.o $(BPF_DIR)/prog.c
 
 build: generate
 	# paths set according to debian
