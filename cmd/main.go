@@ -1,9 +1,13 @@
 package main
 
+import "C"
+
+// #cgo LDFLAGS: -lz -lelf
 import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os/exec"
 	"runtime"
 	"syscall"
 
@@ -22,7 +26,7 @@ type PluginConf struct {
 	BPFProgPath string `json:"bpf_prog_path"`
 }
 
-const BPF_ELF_NAME = "./bin/ebpf_prog.o"
+const BPF_ELF_NAME = "./ecni.bpf.o"
 const TC_PROG_NAME_INGRESS = "tc_ingress"
 const TC_PROG_NAME_EGRESS = "tc_egress"
 
@@ -147,74 +151,57 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("failed to load BPF module: %v", err)
 	}
 	defer bpfModule.Close() // Keep this, but pin first
-	if err := loadBPFProgram(bpfModule, hostIface.Name, contIface.Name); err != nil {
+	if err := loadBPFProgram(bpfModule, hostIface.Name, contIface.Name, netns); err != nil {
 		return fmt.Errorf("failed to load BPF program: %v", err)
 	}
 	return types.PrintResult(result, config.CNIVersion)
 }
 
-func loadBPFProgram(bpfModule *bpf.Module, hostIface, containerIface string) error {
-	// TC initialization
+func loadBPFProgram(bpfModule *bpf.Module, hostIface, containerIface string, netns ns.NetNS) error {
+	// createClsactQdisc(hostIface)
+	// Attach ingress to host interface (host namespace)
 	hook := bpfModule.TcHookInit()
-	err := hook.SetInterfaceByName(hostIface)
-	if err != nil {
-		return fmt.Errorf("failed to set tc hook hook on interfgace %s: %v", hostIface, err)
+	if err := hook.SetInterfaceByName(hostIface); err != nil {
+		return fmt.Errorf("set host interface %s: %v", hostIface, err)
 	}
-
-	//Ingress on host
 	hook.SetAttachPoint(bpf.BPFTcIngress)
-	err = hook.Create()
+	if err := hook.Create(); err != nil && err != syscall.EEXIST {
+		return fmt.Errorf("create ingress hook: %v", err)
+	}
+	progIngress, err := bpfModule.GetProgram(TC_PROG_NAME_INGRESS)
 	if err != nil {
-		if errno, ok := err.(syscall.Errno); ok && errno != syscall.EEXIST {
-			return fmt.Errorf("failed to create tc hook on interface %s: %v", hostIface, err)
+		return fmt.Errorf("get ingress prog: %v", err)
+	}
+	if err := hook.Attach(&bpf.TcOpts{ProgFd: int(progIngress.FileDescriptor())}); err != nil {
+		return fmt.Errorf("attach ingress: %v", err)
+	}
+
+	// Attach egress to container interface (container namespace)
+	err = netns.Do(func(_ ns.NetNS) error {
+		hookEgress := bpfModule.TcHookInit()
+		if err := hookEgress.SetInterfaceByName(containerIface); err != nil {
+			return fmt.Errorf("set container interface %s: %v", containerIface, err)
 		}
-	}
+		hookEgress.SetAttachPoint(bpf.BPFTcEgress)
+		if err := hookEgress.Create(); err != nil && err != syscall.EEXIST {
+			return fmt.Errorf("create egress hook: %v", err)
+		}
+		progEgress, err := bpfModule.GetProgram(TC_PROG_NAME_EGRESS)
+		if err != nil {
+			return fmt.Errorf("get egress prog: %v", err)
+		}
+		if progEgress == nil {
+			return fmt.Errorf("egress program not found")
+		}
+		return hookEgress.Attach(&bpf.TcOpts{ProgFd: int(progEgress.FileDescriptor())})
+	})
+	fmt.Println("LOAD OKAY")
+	return err
+}
 
-	tcProg, err := bpfModule.GetProgram(TC_PROG_NAME_INGRESS)
-	if err != nil {
-		return fmt.Errorf("failed to get program %s: %v", TC_PROG_NAME_INGRESS, err)
-	}
-	if tcProg == nil {
-		return fmt.Errorf("could not find program %s: ", TC_PROG_NAME_INGRESS)
-	}
-	var tcOpts bpf.TcOpts
-	pinPath := "/sys/fs/bpf/tc_ingress"
-	if err := tcProg.Pin(pinPath); err != nil {
-		return fmt.Errorf("failed to pin program: %v", err)
-	}
-
-	// Attach using pinned program
-	tcOpts.ProgFd = int(tcProg.FileDescriptor())
-	if err := hook.Attach(&tcOpts); err != nil {
-		return fmt.Errorf("failed to attach: %v (fd: %d)", err, tcOpts.ProgFd)
-	}
-
-	// Egress on container
-	hook2 := bpfModule.TcHookInit()
-	err = hook2.SetInterfaceByName(containerIface)
-	if err != nil {
-		return fmt.Errorf("failed to set tc hook hook on interfgace %s: %v", hostIface, err)
-	}
-
-	tcProg, err = bpfModule.GetProgram(TC_PROG_NAME_EGRESS)
-	if err != nil {
-		return fmt.Errorf("failed to get program %s: %v", TC_PROG_NAME_EGRESS, err)
-	}
-	if tcProg == nil {
-		return fmt.Errorf("could not find program %s: ", TC_PROG_NAME_EGRESS)
-	}
-	pinPath = "/sys/fs/bpf/tc_egress"
-	if err := tcProg.Pin(pinPath); err != nil {
-		return fmt.Errorf("failed to pin program: %v", err)
-	}
-
-	// Attach using pinned program
-	tcOpts.ProgFd = int(tcProg.FileDescriptor())
-	if err := hook2.Attach(&tcOpts); err != nil {
-		return fmt.Errorf("failed to attach: %v (fd: %d)", err, tcOpts.ProgFd)
-	}
-
-	return nil
+func createClsactQdisc(iface string) {
+	cmd := exec.Command("tc", "qdisc", "add", "dev", iface, "clsact")
+	cmd.Run() // Ignore errors if exists
 }
 
 func cmdDel(args *skel.CmdArgs) error {

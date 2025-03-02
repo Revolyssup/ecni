@@ -30,4 +30,7 @@ jobs:
             sudo systemctl start docker || sudo service docker start
 
       - name: Build
-        run: make docker-run-host
+        run: make build
+
+      - name: Run test
+        run: sudo ./test.sh

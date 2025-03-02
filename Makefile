@@ -1,16 +1,100 @@
-CUR_DIR := $(shell pwd)
-BPF_DIR := $(realpath $(CUR_DIR)/bpf)
-generate:
-	clang -O2 -target bpf -D__KERNEL__ -D__BPF__ \
-	      -I/usr/include/$(shell uname -m)-linux-gnu \
-	      -c -o $(BPF_DIR)/ebpf_prog.o $(BPF_DIR)/prog.c
+OUTPUT = ./bin
+LIBBPF = ./libbpf
 
-build: generate
-	# paths set according to debian
-	CC=clang CGO_CFLAGS="-I /usr/include/bpf" CGO_LDFLAGS="-lelf -lz /usr/lib/x86_64-linux-gnu/libbpf.a" go build -o ./bin/ecni -ldflags="-w -extldflags "-static"" $(CUR_DIR)/cmd/
+CC = gcc
+CLANG = clang
 
-build-without-bpf: 
-	go build -o ./bin/ecni $(CUR_DIR)/cmd/
+ARCH := $(shell uname -m)
+ARCH := $(subst x86_64,amd64,$(ARCH))
+GOARCH := $(ARCH)
+
+BPFTOOL = $(shell which bpftool || /bin/false)
+BTFFILE = /sys/kernel/btf/vmlinux
+GIT = $(shell which git || /bin/false)
+VMLINUXH = vmlinux.h
+
+# libbpf
+
+LIBBPF_SRC = $(abspath ./libbpf/src)
+LIBBPF_OBJ = $(abspath ./$(OUTPUT)/libbpf.a)
+LIBBPF_OBJDIR = $(abspath ./$(OUTPUT)/libbpf)
+LIBBPF_DESTDIR = $(abspath ./$(OUTPUT))
+
+CFLAGS = -ggdb -gdwarf -O2 -Wall -fpie -Wno-unused-variable -Wno-unused-function
+LDFLAGS =
+
+BPF_CFLAGS = "-I$(abspath $(OUTPUT))"
+BPF_LDFLAGS = "-lelf -lz $(LIBBPF_OBJ)"
+
+CGO_CFLAGS = "-I$(abspath $(OUTPUT))"
+CGO_LDFLAGS = "-lelf -lz $(LIBBPF_OBJ)"
+#CGO_EXTLDFLAGS = '-w -extldflags "-static"'
+CGO_EXTLDFLAGS = ''
+
+## program
+
+.PHONY: $(PROGRAM)
+.PHONY: $(PROGRAM).bpf.c
+
+PROGRAM = ecni
+
+# vmlinux header file
+
+.PHONY: vmlinuxh
+vmlinuxh: $(VMLINUXH)
+
+$(VMLINUXH): $(OUTPUT)
+ifeq ($(wildcard $(BPFTOOL)),)
+	@echo "ERROR: could not find bpftool"
+	@exit 1
+endif
+	@if [ ! -f $(BTFFILE) ]; then \
+		echo "ERROR: kernel does not seem to support BTF"; \
+		exit 1; \
+	fi
+	@if [ ! -f $(VMLINUXH) ]; then \
+		echo "INFO: generating $(VMLINUXH) from $(BTFFILE)"; \
+		$(BPFTOOL) btf dump file $(BTFFILE) format c > $(VMLINUXH); \
+	fi
+
+# static libbpf generation for the git submodule
+
+.PHONY: libbpf-static
+libbpf-static: $(LIBBPF_OBJ)
+
+$(LIBBPF_OBJ): $(LIBBPF_SRC) $(wildcard $(LIBBPF_SRC)/*.[ch]) | $(OUTPUT)/libbpf
+	CC="$(CC)" CFLAGS="$(CFLAGS)" LD_FLAGS="$(LDFLAGS)" \
+	   $(MAKE) -C $(LIBBPF_SRC) \
+		BUILD_STATIC_ONLY=1 \
+		OBJDIR=$(LIBBPF_OBJDIR) \
+		DESTDIR=$(LIBBPF_DESTDIR) \
+		INCLUDEDIR= LIBDIR= UAPIDIR= prefix= libdir= install
+
+$(LIBBPF_SRC):
+ifeq ($(wildcard $@), )
+	echo "INFO: updating submodule 'libbpf'"
+	$(GIT) submodule update --init --recursive
+endif
+
+
+$(PROGRAM).bpf.o: $(PROGRAM).bpf.c | vmlinuxh
+	$(CLANG) $(CFLAGS) -target bpf -I. -I$(OUTPUT) -c $< -o $@
+
+build: libbpf-static | $(PROGRAM).bpf.o
+	CC=$(CLANG) \
+		CGO_CFLAGS=$(CGO_CFLAGS) \
+		CGO_LDFLAGS=$(CGO_LDFLAGS) \
+                GOARCH=$(GOARCH) \
+                go build \
+                -tags netgo -ldflags $(CGO_EXTLDFLAGS) \
+                -o $(OUTPUT)/ecni ./cmd/
+$(OUTPUT):
+	mkdir -p $(OUTPUT)
+
+$(OUTPUT)/libbpf:
+	mkdir -p $(OUTPUT)/libbpf
+
+#----------------------------------------------------#
 
 docker-run-host: docker-build
 	docker run -i --rm \
@@ -22,5 +106,19 @@ docker-run-host: docker-build
 		--privileged \
 		revoly/ecni:latest
 
+docker-run-host-debug: docker-build-debug
+	docker run -it --rm \
+		--cap-add=CAP_BPF \
+		--cap-add=CAP_SYS_ADMIN \
+		-v /sys/fs/bpf:/sys/fs/bpf \
+		-v /var/run/docker.sock:/var/run/docker.sock \
+		-v $(CUR_DIR):/build \
+		--pid=host \
+		--privileged \
+		revoly/ecni:debug
+
 docker-build:
 	docker build -t revoly/ecni:latest .
+
+docker-build-debug:
+	docker build -t revoly/ecni:debug -f Dockerfile.debug .

@@ -5,7 +5,7 @@ go 1.23
 toolchain go1.23.6
 
 require (
-	github.com/aquasecurity/libbpfgo v0.4.9-libbpf-1.2.0.0.20230629155705-ad00ee454c9c
+	github.com/aquasecurity/libbpfgo v0.1.1
 	github.com/containernetworking/cni v1.2.3
 	github.com/containernetworking/plugins v1.6.2
 	github.com/vishvananda/netlink v1.3.0
@@ -19,3 +19,5 @@ require (
 	golang.org/x/sys v0.28.0 // indirect
 	sigs.k8s.io/knftables v0.0.18 // indirect
 )
+
+replace github.com/aquasecurity/libbpfgo => ./libbpfgo

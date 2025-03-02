@@ -1,5 +1,3 @@
-github.com/aquasecurity/libbpfgo v0.4.9-libbpf-1.2.0.0.20230629155705-ad00ee454c9c h1:6Dwl5ZqYYYDJdFFkYr0mxUbpAUkNE4dYIdQ0vgzY0RM=
-github.com/aquasecurity/libbpfgo v0.4.9-libbpf-1.2.0.0.20230629155705-ad00ee454c9c/go.mod h1:UD3Mfr+JZ/ASK2VMucI/zAdEhb35LtvYXvAUdrdqE9s=
 github.com/containernetworking/cni v1.2.3 h1:hhOcjNVUQTnzdRJ6alC5XF+wd9mfGIUaj8FuJbEslXM=
 github.com/containernetworking/cni v1.2.3/go.mod h1:DuLgF+aPd3DzcTQTtp/Nvl1Kim23oFKdm2okJzBQA5M=
 github.com/containernetworking/plugins v1.6.2 h1:pqP8Mq923TLyef5g97XfJ/xpDeVek4yF8A4mzy9Tc4U=
@@ -26,8 +24,8 @@ github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZb
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/safchain/ethtool v0.5.9 h1://6RvaOKFf3nQ0rl5+8zBbE4/72455VC9Jq61pfq67E=
 github.com/safchain/ethtool v0.5.9/go.mod h1:w8oSsZeowyRaM7xJJBAbubzzrOkwO8TBgPSEqPP/5mg=
-github.com/stretchr/testify v1.8.2 h1:+h33VjcLVPDHtOdpUCuF+7gSuG3yGIftsP1YvFihtJ8=
-github.com/stretchr/testify v1.8.2/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
+github.com/stretchr/testify v1.10.0 h1:Xv5erBjTwe/5IxqUQTdXv5kgmIvbHo3QQyRwhJsOfJA=
+github.com/stretchr/testify v1.10.0/go.mod h1:r2ic/lqez/lEtzL7wO/rwa5dbSLXVDPFyf8C91i36aY=
 github.com/vishvananda/netlink v1.3.0 h1:X7l42GfcV4S6E4vHTsw48qbrV+9PVojNfIhZcwQdrZk=
 github.com/vishvananda/netlink v1.3.0/go.mod h1:i6NetklAujEcC6fK0JPjT8qSwWyO0HLn4UKG+hGqeJs=
 github.com/vishvananda/netns v0.0.4 h1:Oeaw1EM2JMxD51g9uhtC0D7erkIjgmj8+JZc26m1YX8=
@@ -45,5 +43,9 @@ golang.org/x/tools v0.26.0 h1:v/60pFQmzmT9ExmjDv2gGIfi3OqfKoEP6I5+umXlbnQ=
 golang.org/x/tools v0.26.0/go.mod h1:TPVVj70c7JJ3WCazhD8OdXcZg/og+b9+tH/KxylGwH0=
 gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
 gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+kernel.org/pub/linux/libs/security/libcap/cap v1.2.73 h1:Th2b8jljYqkyZKS3aD3N9VpYsQpHuXLgea+SZUIfODA=
+kernel.org/pub/linux/libs/security/libcap/cap v1.2.73/go.mod h1:hbeKwKcboEsxARYmcy/AdPVN11wmT/Wnpgv4k4ftyqY=
+kernel.org/pub/linux/libs/security/libcap/psx v1.2.73 h1:SEAEUiPVylTD4vqqi+vtGkSnXeP2FcRO3FoZB1MklMw=
+kernel.org/pub/linux/libs/security/libcap/psx v1.2.73/go.mod h1:+l6Ee2F59XiJ2I6WR5ObpC1utCQJZ/VLsEbQCD8RG24=
 sigs.k8s.io/knftables v0.0.18 h1:6Duvmu0s/HwGifKrtl6G3AyAPYlWiZqTgS8bkVMiyaE=
 sigs.k8s.io/knftables v0.0.18/go.mod h1:f/5ZLKYEUPUhVjUCg6l80ACdL7CIIyeL0DxfgojGRTk=

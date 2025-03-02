@@ -82,7 +82,7 @@ static __always_inline __u16 ipv4_csum(struct iphdr *ip) {
     return ~sum;
 } 
 
-SEC("tc")
+SEC("tc/egress")
 int tc_egress(struct __sk_buff *skb) {
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
@@ -138,7 +138,7 @@ int tc_egress(struct __sk_buff *skb) {
     return TC_ACT_OK;
 }
 
-SEC("tc")
+SEC("tc/ingress")
 int tc_ingress(struct __sk_buff *skb) {
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
