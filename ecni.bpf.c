@@ -51,15 +51,15 @@ enum {
 
 // Connection tracking key (external perspective)
 struct conn_key {
-    __u32 src_ip;
-    __u16 src_port;
+    __u32 src_ip;    // NATed source IP
+    __u16 src_port;  // NATed source port
     __u8 protocol;
 };
 
 // Original connection info (container perspective)
 struct conn_value {
-    __u32 orig_dst_ip;
-    __u16 orig_dst_port;
+    __u32 orig_src_ip;   // Original source IP (container's IP)
+    __u16 orig_src_port; // Original source port (container's port)
 };
 
 struct {
@@ -80,118 +80,195 @@ static __always_inline __u16 ipv4_csum(struct iphdr *ip) {
     sum = (sum >> 16) + (sum & 0xFFFF);
     sum += (sum >> 16);
     return ~sum;
-} 
+}
+
+struct packet {
+  __u32 source_ip;
+  __u32 dest_ip;
+  __u32 size;
+  __u16 source_port;
+  __u16 dest_port;
+  __u8 protocol;
+  _Bool is_dropped;
+  __u8 direction;
+};
 
 SEC("tc/egress")
-int tc_egress(struct __sk_buff *skb) {
-    void *data = (void *)(long)skb->data;
-    void *data_end = (void *)(long)skb->data_end;
+int tc_egress(struct __sk_buff *ctx) {
+    bpf_printk("EGRESS START");
+    void *data = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
     
+    // Ethernet header check
     struct ethhdr *eth = data;
-    if (data + sizeof(*eth) > data_end) return TC_ACT_OK;
-    
-    if (eth->h_proto != bpf_htons(ETH_P_IP)) return TC_ACT_OK;
-
-    struct iphdr *ip = data + sizeof(*eth);
-    if ((void *)(ip + 1) > data_end) return TC_ACT_OK;
-
-    // Check container subnet 10.0.0.0/24
-    if ((ip->saddr & bpf_htonl(0xFFFFFF00)) != bpf_htonl(0x0A000000)) {
+    if ((void *)(eth + 1) > data_end){
+        bpf_printk("EGRESS: eth header check failed");
+        return TC_ACT_OK;
+    }
+    if (eth->h_proto != bpf_htons(ETH_P_IP)){
+        bpf_printk("EGRESS: eth proto check failed");
         return TC_ACT_OK;
     }
 
-    // Store original values
-    __u32 orig_src_ip = ip->saddr;
-    __u16 orig_src_port = 0;
 
-    // Get transport header
-    if (ip->protocol == IPPROTO_TCP) {
-        struct tcphdr *tcp = (void *)ip + sizeof(*ip);
-        if ((void *)(tcp + 1) > data_end) return TC_ACT_OK;
-        orig_src_port = tcp->source;
-    } else if (ip->protocol == IPPROTO_UDP) {
-        struct udphdr *udp = (void *)ip + sizeof(*ip);
-        if ((void *)(udp + 1) > data_end) return TC_ACT_OK;
-        orig_src_port = udp->source;
-    } else {
-        return TC_ACT_OK; // Only handle TCP/UDP
+    // IP header check
+    struct iphdr *ip = (struct iphdr *)(eth + 1);
+    if ((void *)(ip + 1) > data_end){
+        bpf_printk("EGRESS: ip header check failed");
+        return TC_ACT_OK;
+    }
+    __u8 ip_header_len = ip->ihl * 4;
+    if (ip_header_len < sizeof(*ip) || (void *)ip + ip_header_len > data_end)
+    {
+        bpf_printk("EGRESS: ip header len check failed");
+        return TC_ACT_OK;
     }
 
-    // Create NAT mapping
+
+    // Extract original source information
+    __u32 orig_src_ip = ip->saddr;
+    __u16 orig_src_port = 0;
+    __u8 protocol = ip->protocol;
+
+    // Debug: Print original IP info
+    bpf_printk("EGRESS START: proto=%d src=%pI4 -> dest=%pI4", 
+              protocol, &orig_src_ip, &ip->daddr);
+
+    // Extract ports for TCP/UDP
+    if (protocol == IPPROTO_TCP || protocol == IPPROTO_UDP) {
+        __u16 *ports = (__u16 *)((void *)ip + ip_header_len);
+        if ((void *)(ports + 2) > data_end)
+            return TC_ACT_OK;
+        orig_src_port = bpf_ntohs(ports[0]);
+        bpf_printk("EGRESS PORTS: src_port=%d dst_port=%d", 
+                  orig_src_port, bpf_ntohs(ports[1]));
+    }
+
+    // Perform NAT
+    __u32 new_src_ip = bpf_htonl(0xC0A8007C); // 192.168.0.124
+    __u32 old_saddr = ip->saddr;
+    ip->saddr = new_src_ip;
+    __u16 new_src_port = bpf_htons(bpf_get_prandom_u32() & 0xFFFF);
+    
+    // Update packet and connection tracker
+    if (protocol == IPPROTO_TCP || protocol == IPPROTO_UDP) {
+        __u16 *ports = (__u16 *)((void *)ip + ip_header_len);
+        ports[0] = new_src_port;  // Update source port in packet
+    }
+    // Debug: Print NAT translation
+    bpf_printk("EGRESS NAT: %pI4:%d -> %pI4:%d", 
+              &old_saddr, orig_src_port, 
+              &new_src_ip, orig_src_port);
+
+    // Update connection tracker
     struct conn_key key = {
-        .src_ip = bpf_htonl(0xC0A80164), // Host external IP
-        .src_port = orig_src_port,       // Keep same port for demo
-        .protocol = ip->protocol
+        .src_ip = bpf_ntohl(new_src_ip),
+        .src_port = bpf_ntohs(new_src_port),
+        .protocol = protocol
     };
-
     struct conn_value value = {
-        .orig_dst_ip = orig_src_ip,
-        .orig_dst_port = orig_src_port
+        .orig_src_ip = bpf_ntohl(old_saddr),
+        .orig_src_port = orig_src_port
     };
-
+    
     bpf_map_update_elem(&conn_tracker, &key, &value, BPF_ANY);
+    bpf_printk("EGRESS MAP UPDATE: key(%pI4:%d) -> value(%pI4:%d)", 
+              &key.src_ip, key.src_port,
+              &value.orig_src_ip, value.orig_src_port);
 
-    // Perform SNAT
-    ip->saddr = bpf_htonl(0xC0A80164); // 192.168.1.100
-    ip->check = ipv4_csum(ip);
+    // Adjust checksum
+    __u32 delta = new_src_ip - old_saddr;
+    __u32 sum = (~bpf_ntohs(ip->check)) & 0xFFFF;
+    sum += (delta >> 16) + (delta & 0xFFFF);
+    sum = (sum >> 16) + (sum & 0xFFFF);
+    ip->check = bpf_htons(~sum & 0xFFFF);
 
+    bpf_printk("EGRESS COMPLETE: new checksum=0x%x", ip->check);
     return TC_ACT_OK;
 }
 
 SEC("tc/ingress")
-int tc_ingress(struct __sk_buff *skb) {
-    void *data = (void *)(long)skb->data;
-    void *data_end = (void *)(long)skb->data_end;
+int tc_ingress(struct __sk_buff *ctx) {
+    void *data = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
 
+    // Ethernet header check
     struct ethhdr *eth = data;
-    if (data + sizeof(*eth) > data_end) return TC_ACT_OK;
-    
-    if (eth->h_proto != bpf_htons(ETH_P_IP)) return TC_ACT_OK;
+    if ((void *)(eth + 1) > data_end)
+        return TC_ACT_OK;
+    if (eth->h_proto != bpf_htons(ETH_P_IP))
+        return TC_ACT_OK;
 
-    struct iphdr *ip = data + sizeof(*eth);
-    if ((void *)(ip + 1) > data_end) return TC_ACT_OK;
+    // IP header check
+    struct iphdr *ip = (struct iphdr *)(eth + 1);
+    if ((void *)(ip + 1) > data_end)
+        return TC_ACT_OK;
+    __u8 ip_header_len = ip->ihl * 4;
+    if (ip_header_len < sizeof(*ip) || (void *)ip + ip_header_len > data_end)
+        return TC_ACT_OK;
 
-    // Check if destined to host external IP
-    if (ip->daddr != bpf_htonl(0xC0A80164)) return TC_ACT_OK;
+    // Extract destination information
+    __u32 dest_ip = bpf_ntohl(ip->daddr);
+    __u16 dest_port = 0;
+    __u8 protocol = ip->protocol;
+    if (protocol == IPPROTO_TCP || protocol == IPPROTO_UDP) {
+        __u16 *ports = (__u16 *)((void *)ip + ip_header_len);
+        if ((void *)(ports + 2) > data_end)
+            return TC_ACT_OK;
+        dest_port = bpf_ntohs(ports[0]);
+        bpf_printk("EGRESS PORTS: src_port=%d dst_port=%d", 
+                  dest_port, bpf_ntohs(ports[1]));
+    }
 
-    // Look up connection tracking
+
+    bpf_printk("INGRESS START: proto=%d dest=%pI4", protocol, &ip->daddr);
+
+    // Extract ports for TCP/UDP
+    if (protocol == IPPROTO_TCP || protocol == IPPROTO_UDP) {
+        __u16 *ports = (__u16 *)((void *)ip + ip_header_len);
+        if ((void *)(ports + 2) > data_end)
+            return TC_ACT_OK;
+        dest_port = bpf_ntohs(ports[1]);
+        bpf_printk("INGRESS PORTS: src_port=%d dst_port=%d", 
+                  bpf_ntohs(ports[0]), dest_port);
+    }
+
+    // Lookup connection tracker entry
     struct conn_key key = {
-        .src_ip = ip->daddr,
-        .src_port = 0,
-        .protocol = ip->protocol
+        .src_ip = dest_ip,
+        .src_port = dest_port,
+        .protocol = protocol
     };
-
-    if (ip->protocol == IPPROTO_TCP) {
-        struct tcphdr *tcp = (void *)ip + sizeof(*ip);
-        if ((void *)(tcp + 1) > data_end) return TC_ACT_OK;
-        key.src_port = tcp->dest;
-    } else if (ip->protocol == IPPROTO_UDP) {
-        struct udphdr *udp = (void *)ip + sizeof(*ip);
-        if ((void *)(udp + 1) > data_end) return TC_ACT_OK;
-        key.src_port = udp->dest;
-    } else {
+    
+    bpf_printk("INGRESS MAP LOOKUP: key(%pI4:%d)", &key.src_ip, key.src_port);
+    struct conn_value *value = bpf_map_lookup_elem(&conn_tracker, &key);
+    
+    if (!value) {
+        bpf_printk("INGRESS MISS: No map entry for %pI4:%d", 
+                  &key.src_ip, key.src_port);
         return TC_ACT_OK;
     }
 
-    struct conn_value *value = bpf_map_lookup_elem(&conn_tracker, &key);
-    if (!value) return TC_ACT_OK;
+    // Perform reverse NAT
+    __u32 orig_src_ip = bpf_htonl(value->orig_src_ip);
+    __u16 orig_src_port = value->orig_src_port;
+    __u32 old_daddr = ip->daddr;
+    ip->daddr = orig_src_ip;
 
-    // Perform DNAT
-    ip->daddr = value->orig_dst_ip;
-    
-    if (ip->protocol == IPPROTO_TCP) {
-        struct tcphdr *tcp = (void *)ip + sizeof(*ip);
-        tcp->dest = value->orig_dst_port;
-        tcp->check = 0; // Recalc done by kernel
-    } else if (ip->protocol == IPPROTO_UDP) {
-        struct udphdr *udp = (void *)ip + sizeof(*ip);
-        udp->dest = value->orig_dst_port;
-        udp->check = 0; // Optional for IPv4
-    }
+    bpf_printk("INGRESS R-NAT: %pI4:%d -> %pI4:%d", 
+              &old_daddr, dest_port,
+              &orig_src_ip, orig_src_port);
 
-    ip->check = ipv4_csum(ip);
+    // Adjust checksum
+    __u32 delta = orig_src_ip - old_daddr;
+    __u32 sum = (~bpf_ntohs(ip->check)) & 0xFFFF;
+    sum += (delta >> 16) + (delta & 0xFFFF);
+    sum = (sum >> 16) + (sum & 0xFFFF);
+    ip->check = bpf_htons(~sum & 0xFFFF);
 
+    bpf_printk("INGRESS COMPLETE: new checksum=0x%x", ip->check);
     return TC_ACT_OK;
 }
+
 
 char __license[] SEC("license") = "Dual MIT/GPL";
