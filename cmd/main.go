@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"os/exec"
 	"runtime"
 	"syscall"
 
@@ -157,51 +156,65 @@ func cmdAdd(args *skel.CmdArgs) error {
 	return types.PrintResult(result, config.CNIVersion)
 }
 
-func loadBPFProgram(bpfModule *bpf.Module, hostIface, containerIface string, netns ns.NetNS) error {
-	// createClsactQdisc(hostIface)
-	// Attach ingress to host interface (host namespace)
-	hook := bpfModule.TcHookInit()
-	if err := hook.SetInterfaceByName(hostIface); err != nil {
-		return fmt.Errorf("set host interface %s: %v", hostIface, err)
-	}
-	hook.SetAttachPoint(bpf.BPFTcIngress)
-	if err := hook.Create(); err != nil && err != syscall.EEXIST {
-		return fmt.Errorf("create ingress hook: %v", err)
-	}
-	progIngress, err := bpfModule.GetProgram(TC_PROG_NAME_INGRESS)
-	if err != nil {
-		return fmt.Errorf("get ingress prog: %v", err)
-	}
-	if err := hook.Attach(&bpf.TcOpts{ProgFd: int(progIngress.FileDescriptor())}); err != nil {
-		return fmt.Errorf("attach ingress: %v", err)
-	}
-
-	// Attach egress to container interface (container namespace)
-	err = netns.Do(func(_ ns.NetNS) error {
-		hookEgress := bpfModule.TcHookInit()
-		if err := hookEgress.SetInterfaceByName(containerIface); err != nil {
-			return fmt.Errorf("set container interface %s: %v", containerIface, err)
-		}
-		hookEgress.SetAttachPoint(bpf.BPFTcEgress)
-		if err := hookEgress.Create(); err != nil && err != syscall.EEXIST {
-			return fmt.Errorf("create egress hook: %v", err)
-		}
-		progEgress, err := bpfModule.GetProgram(TC_PROG_NAME_EGRESS)
-		if err != nil {
-			return fmt.Errorf("get egress prog: %v", err)
-		}
-		if progEgress == nil {
-			return fmt.Errorf("egress program not found")
-		}
-		return hookEgress.Attach(&bpf.TcOpts{ProgFd: int(progEgress.FileDescriptor())})
-	})
-	fmt.Println("LOAD OKAY")
-	return err
+type BPFFunc struct {
+	FuncName  string
+	Type      bpf.TcAttachPoint
+	Interface string
 }
 
-func createClsactQdisc(iface string) {
-	cmd := exec.Command("tc", "qdisc", "add", "dev", iface, "clsact")
-	cmd.Run() // Ignore errors if exists
+func loadBPFProgram(bpfModule *bpf.Module, hostIface, containerIface string, netns ns.NetNS) error {
+	// Attach ingress to host interface (host namespace)
+	if err := bpfModule.BPFLoadObject(); err != nil {
+		return err
+	}
+	for _, f := range []BPFFunc{
+		{"tc_ingress", bpf.BPFTcIngress, "wlan0"},
+		{"tc_egress", bpf.BPFTcEgress, containerIface},
+	} {
+		hook := bpfModule.TcHookInit()
+		if f.Interface == containerIface {
+			netns.Do(func(_ ns.NetNS) error {
+				if err := hook.SetInterfaceByName(f.Interface); err != nil {
+					return err
+				}
+				hook.SetAttachPoint(f.Type)
+				if err := hook.Create(); err != nil {
+					if errno, ok := err.(syscall.Errno); ok && errno != syscall.EEXIST {
+						return err
+					}
+				}
+				prog, e := bpfModule.GetProgram(f.FuncName)
+				if e != nil {
+					return e
+				}
+				tcOpts := bpf.TcOpts{ProgFd: prog.FileDescriptor()}
+				if err := hook.Attach(&tcOpts); err != nil {
+					return err
+				}
+				return nil
+			})
+		} else {
+			if err := hook.SetInterfaceByName(f.Interface); err != nil {
+				return err
+			}
+			hook.SetAttachPoint(f.Type)
+			if err := hook.Create(); err != nil {
+				if errno, ok := err.(syscall.Errno); ok && errno != syscall.EEXIST {
+					return err
+				}
+			}
+			prog, e := bpfModule.GetProgram(f.FuncName)
+			if e != nil {
+				return e
+			}
+			tcOpts := bpf.TcOpts{ProgFd: prog.FileDescriptor()}
+			if err := hook.Attach(&tcOpts); err != nil {
+				return err
+			}
+		}
+
+	}
+	return nil
 }
 
 func cmdDel(args *skel.CmdArgs) error {
