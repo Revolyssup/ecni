@@ -13,6 +13,12 @@ BTFFILE = /sys/kernel/btf/vmlinux
 GIT = $(shell which git || /bin/false)
 VMLINUXH = vmlinux.h
 
+libbpfgo:
+	@if [ ! -d "./libbpfgo" ]; then \
+		git clone --recursive https://github.com/aquasecurity/libbpfgo; \
+		cp -r ./libbpfgo/libbpf .; \
+	fi
+
 # libbpf
 
 LIBBPF_SRC = $(abspath ./libbpf/src)
@@ -62,7 +68,7 @@ endif
 .PHONY: libbpf-static
 libbpf-static: $(LIBBPF_OBJ)
 
-$(LIBBPF_OBJ): $(LIBBPF_SRC) $(wildcard $(LIBBPF_SRC)/*.[ch]) | $(OUTPUT)/libbpf
+$(LIBBPF_OBJ): libbpfgo  $(LIBBPF_SRC) $(wildcard $(LIBBPF_SRC)/*.[ch]) | $(OUTPUT)/libbpf
 	CC="$(CC)" CFLAGS="$(CFLAGS)" LD_FLAGS="$(LDFLAGS)" \
 	   $(MAKE) -C $(LIBBPF_SRC) \
 		BUILD_STATIC_ONLY=1 \
@@ -74,6 +80,7 @@ $(LIBBPF_SRC):
 ifeq ($(wildcard $@), )
 	echo "INFO: updating submodule 'libbpf'"
 	$(GIT) submodule update --init --recursive
+	cp -r ./libbpfgo/libbpf .
 endif
 
 
@@ -94,31 +101,9 @@ $(OUTPUT):
 $(OUTPUT)/libbpf:
 	mkdir -p $(OUTPUT)/libbpf
 
-#----------------------------------------------------#
-
-docker-run-host: docker-build
-	docker run -i --rm \
-		--cap-add=CAP_BPF \
-		--cap-add=CAP_SYS_ADMIN \
-		-v /sys/fs/bpf:/sys/fs/bpf \
-		-v /var/run/docker.sock:/var/run/docker.sock \
-		--pid=host \
-		--privileged \
-		revoly/ecni:latest
-
-docker-run-host-debug: docker-build-debug
-	docker run -it --rm \
-		--cap-add=CAP_BPF \
-		--cap-add=CAP_SYS_ADMIN \
-		-v /sys/fs/bpf:/sys/fs/bpf \
-		-v /var/run/docker.sock:/var/run/docker.sock \
-		-v $(CUR_DIR):/build \
-		--pid=host \
-		--privileged \
-		revoly/ecni:debug
-
-docker-build:
-	docker build -t revoly/ecni:latest .
-
-docker-build-debug:
-	docker build -t revoly/ecni:debug -f Dockerfile.debug .
+clean:
+# 	$(MAKE) -C $(LIBBPF_SRC) clean
+	rm -rf $(OUTPUT)
+	rm -rf $(VMLINUXH)
+	rm -rf libbpf
+	rm -rf $(PROGRAM).bpf.o $(PROGRAM).o
