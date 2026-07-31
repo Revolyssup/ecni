@@ -22,7 +22,10 @@ import (
 
 type PluginConf struct {
 	types.NetConf
-	BPFProgPath string `json:"bpf_prog_path"`
+	BPFProgPath   string `json:"bpf_prog_path"`
+	HostInterface string `json:"host_interface"`
+	GatewayIP     string `json:"gateway_ip"`
+	ContainerIP   string `json:"container_ip"`
 }
 
 const BPF_ELF_NAME = "./ecni.bpf.o"
@@ -67,6 +70,15 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("failed to setup veth: %v", err)
 	}
 
+	gatewayIP := config.GatewayIP
+	if gatewayIP == "" {
+		gatewayIP = "10.0.0.1/24"
+	}
+	containerIP := config.ContainerIP
+	if containerIP == "" {
+		containerIP = "10.0.0.2/24"
+	}
+
 	// On the HOST side (outside the container namespace):
 	hostVeth, err := netlink.LinkByName(hostIface.Name)
 	if err != nil {
@@ -74,7 +86,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 	}
 
 	// Add the gateway IP to the host-side interface
-	hostAddr, err := netlink.ParseAddr("10.0.0.1/24")
+	hostAddr, err := netlink.ParseAddr(gatewayIP)
 	if err != nil {
 		return fmt.Errorf("failed to parse host IP: %v", err)
 	}
@@ -88,13 +100,17 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("failed to set host veth up: %v", err)
 	}
 
-	gateway := "10.0.0.1"
+	// Parse the gateway for use as route target (IP only, no prefix)
+	gatewayParsed, _, err := net.ParseCIDR(gatewayIP)
+	if err != nil {
+		return fmt.Errorf("failed to parse gateway IP: %v", err)
+	}
 	// IPAM management
 	var result *current.Result
-	// Set up IP address (example - should come from config)
+	// Set up IP address (from config or default)
 	if config.IPAM.Type == "host-local" {
-		// Get subnet from configuration
-		addr, err := netlink.ParseAddr("10.0.0.2/24")
+		// Get container IP from configuration
+		addr, err := netlink.ParseAddr(containerIP)
 		if err != nil {
 			return err
 		}
@@ -122,7 +138,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 
 			route := &netlink.Route{
 				Dst: defaultDst,
-				Gw:  net.ParseIP(gateway),
+				Gw:  gatewayParsed,
 			}
 
 			if err := netlink.RouteAdd(route); err != nil {
@@ -137,7 +153,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 			Interfaces: []*current.Interface{hostIface, contIface},
 			IPs: []*current.IPConfig{{
 				Address: net.IPNet{IP: addr.IP, Mask: addr.Mask},
-				Gateway: net.ParseIP(gateway),
+				Gateway: gatewayParsed,
 			}},
 		}
 
@@ -150,7 +166,11 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("failed to load BPF module: %v", err)
 	}
 	defer bpfModule.Close() // Keep this, but pin first
-	if err := loadBPFProgram(bpfModule, hostIface.Name, contIface.Name, netns); err != nil {
+	hostInterface := config.HostInterface
+	if hostInterface == "" {
+		hostInterface = "eth0"
+	}
+	if err := loadBPFProgram(bpfModule, hostInterface, contIface.Name, netns); err != nil {
 		return fmt.Errorf("failed to load BPF program: %v", err)
 	}
 	return types.PrintResult(result, config.CNIVersion)
@@ -168,7 +188,7 @@ func loadBPFProgram(bpfModule *bpf.Module, hostIface, containerIface string, net
 		return err
 	}
 	for _, f := range []BPFFunc{
-		{"tc_ingress", bpf.BPFTcIngress, "wlan0"},
+		{"tc_ingress", bpf.BPFTcIngress, hostIface},
 		{"tc_egress", bpf.BPFTcEgress, containerIface},
 	} {
 		hook := bpfModule.TcHookInit()
@@ -248,6 +268,63 @@ func main() {
 }
 
 func cmdCheck(args *skel.CmdArgs) error {
-	// Implement if needed
-	return nil
+	config := PluginConf{}
+	if err := json.Unmarshal(args.StdinData, &config); err != nil {
+		return fmt.Errorf("failed to parse config: %v", err)
+	}
+
+	if args.Netns == "" {
+		return nil
+	}
+
+	containerIP := config.ContainerIP
+	if containerIP == "" {
+		containerIP = "10.0.0.2/24"
+	}
+
+	netns, err := ns.GetNS(args.Netns)
+	if err != nil {
+		return fmt.Errorf("failed to open netns %q: %v", args.Netns, err)
+	}
+	defer netns.Close()
+
+	return netns.Do(func(_ ns.NetNS) error {
+		link, err := netlink.LinkByName(args.IfName)
+		if err != nil {
+			return fmt.Errorf("interface %s not found in container: %v", args.IfName, err)
+		}
+
+		addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
+		if err != nil {
+			return fmt.Errorf("failed to list addresses on %s: %v", args.IfName, err)
+		}
+
+		expectedAddr, err := netlink.ParseAddr(containerIP)
+		if err != nil {
+			return fmt.Errorf("failed to parse container IP %s: %v", containerIP, err)
+		}
+
+		found := false
+		for _, addr := range addrs {
+			if addr.IP.Equal(expectedAddr.IP) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("expected IP %s not assigned to interface %s", containerIP, args.IfName)
+		}
+
+		routes, err := netlink.RouteList(link, netlink.FAMILY_V4)
+		if err != nil {
+			return fmt.Errorf("failed to list routes: %v", err)
+		}
+
+		for _, r := range routes {
+			if r.Dst == nil || r.Dst.String() == "0.0.0.0/0" {
+				return nil
+			}
+		}
+		return fmt.Errorf("no default route found in container namespace")
+	})
 }
